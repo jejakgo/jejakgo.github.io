@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JejakGo – shared plan</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  body{margin:0;background:#0F1420;color:#EEF1F6;font-family:system-ui,-apple-system,Roboto,sans-serif;-webkit-text-size-adjust:100%}
+  main{max-width:520px;margin:0 auto;padding:24px 16px 48px;display:flex;flex-direction:column;gap:12px}
+  h1{font-size:24px;margin:0;line-height:1.25}
+  h2{font-size:16px;margin:0}
+  .card{background:#1A2233;border-radius:16px;padding:14px 16px}
+  .muted{color:#A3AEC2;font-size:14px}
+  .small{font-size:12px;color:#A3AEC2}
+  .brand b{color:#F5A524}
+  .map{height:200px;border-radius:12px;margin-top:10px;background:#1D2433}
+  .step{display:flex;gap:10px;padding:10px 0;border-top:1px solid #263049}
+  .step:first-of-type{border-top:0}
+  .num{flex:0 0 26px;height:26px;border-radius:13px;background:#2B3850;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  .grow{flex:1;min-width:0}
+  .t{font-weight:600}
+  .tip{color:#C3CBD8;font-size:13px;margin-top:3px}
+  .links{display:flex;gap:8px;margin-top:7px;flex-wrap:wrap}
+  .links a{font-size:12px;color:#EEF1F6;text-decoration:none;border:1px solid #33405C;border-radius:14px;padding:4px 10px}
+  .item{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid #263049}
+  .item:first-of-type{border-top:0}
+  .box{flex:0 0 24px;font-size:20px;line-height:22px;cursor:pointer;user-select:none}
+  .done .t{text-decoration:line-through;color:#7D879B}
+  .dayh{display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+  .today{border:1px solid #F5A524}
+  .tag{font-size:11px;font-weight:700;color:#F5A524}
+  .sub{margin:8px 0 0 34px;padding-left:10px;border-left:2px solid #2B3850}
+  a.btn,button.btn{display:flex;align-items:center;justify-content:center;height:52px;border-radius:26px;font-weight:700;font-size:16px;text-decoration:none;border:0;width:100%;font-family:inherit;cursor:pointer}
+  .primary{background:#F5A524;color:#1A1305}
+  .ghost{background:transparent;border:1px solid #2A3550 !important;color:#EEF1F6}
+  .err{color:#F5A524}
+  .leaflet-container{background:#1D2433}
+</style>
+</head>
+<body>
+<main id="app">
+  <div class="brand muted">Jejak<b>Go</b></div>
+  <h1 id="title">Loading…</h1>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  var PLAY = "https://jejakgo.github.io/#download";
+  var app = document.getElementById("app");
+  var hash = location.hash.replace(/^#/, "");
+  var isAndroid = /Android/i.test(navigator.userAgent);
+  var ICON = {walk:"🚶", car:"🚗", taxi:"🚕", moto:"🛵", bike:"🚲", bus:"🚌", train:"🚆", rail:"🚇", ferry:"⛴", flight:"✈️", stay:"⏸", task:"✅",
+              place:"📍", journey:"🧭", note:"✏️"};
+  var TICON = {place:"📍", journey:"🧭", stay:"🛏", note:"✏️"};
+  var RICON = {flight:"✈️", train:"🚄", bus:"🚌", ferry:"⛴", car:"🚗"};
+  var NAME = {walk:"Walk", car:"Car / taxi", taxi:"Taxi / Grab", moto:"Two-wheeler", bike:"Bicycle", bus:"Bus", train:"Train", rail:"MRT / LRT",
+              ferry:"Boat / ferry", flight:"Flight", stay:"Stay", task:"To do"};
+
+  function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function b64bytes(s){ s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), function(c){ return c.charCodeAt(0); }); }
+  function pad(n){ return (n < 10 ? "0" : "") + n; }
+  function hm(min){ return min == null || min < 0 ? "" : pad(Math.floor(min / 60)) + ":" + pad(min % 60); }
+  function clock(ms){ var d = new Date(ms); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+  function has(o){ return o && typeof o.a === "number" && typeof o.o === "number"; }
+  function store(k, v){ try { if (v === undefined) return JSON.parse(localStorage.getItem(k) || "null"); localStorage.setItem(k, JSON.stringify(v)); } catch (e) { return null; } }
+
+  /* The day a trip day falls on, read at noon so other time zones don't shift it. */
+  function dayDate(t, i){ var d = new Date(t.sd + 12 * 3600e3); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); return d; }
+  function dayLabel(d){ return d.toLocaleDateString("en-GB", {weekday:"short", day:"numeric", month:"short"}); }
+
+  function mapLinks(fromLat, fromLon, lat, lon, mode, name){
+    var w = el("div", "links");
+    var gm = {walk:"walking", bike:"bicycling", car:"driving", taxi:"driving", moto:"driving"}[mode] || "transit";
+    var am = {walk:"w", car:"d", taxi:"d", moto:"d"}[mode] || "r";
+    var g = "https://www.google.com/maps/dir/?api=1&destination=" + lat + "," + lon + "&travelmode=" + gm +
+            (fromLat != null ? "&origin=" + fromLat + "," + fromLon : "");
+    var ap = "https://maps.apple.com/?daddr=" + lat + "," + lon + "&dirflg=" + am + (fromLat != null ? "&saddr=" + fromLat + "," + fromLon : "") +
+             (name ? "&q=" + encodeURIComponent(name) : "");
+    if (!mode) { g = "https://www.google.com/maps/search/?api=1&query=" + lat + "," + lon; ap = "https://maps.apple.com/?ll=" + lat + "," + lon + "&q=" + encodeURIComponent(name || "Place"); }
+    var a1 = el("a", null, " Apple Maps"); a1.href = ap; a1.target = "_blank"; a1.prepend("🍎");
+    var a2 = el("a", null, " Google Maps"); a2.href = g; a2.target = "_blank"; a2.prepend("🗺");
+    w.appendChild(a1); w.appendChild(a2);
+    return w;
+  }
+
+  function addMap(parent, pts, lines){
+    if (!window.L || !pts.length) return;
+    var div = el("div", "map"); parent.appendChild(div);
+    var m = L.map(div, {zoomControl:false, attributionControl:true, scrollWheelZoom:false});
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap"}).addTo(m);
+    var ll = [];
+    pts.forEach(function(p, i){
+      ll.push([p.a, p.o]);
+      L.circleMarker([p.a, p.o], {radius:9, color:"#0F1420", weight:2, fillColor:p.start ? "#4ADE80" : "#F5A524", fillOpacity:1})
+        .addTo(m).bindTooltip(p.label || String(i + 1), {permanent:pts.length <= 8, direction:"top", className:""});
+    });
+    if (lines && ll.length > 1) L.polyline(ll, {color:"#5B9BFF", weight:3, dashArray:"6 6"}).addTo(m);
+    if (ll.length === 1) m.setView(ll[0], 15); else m.fitBounds(ll, {padding:[24, 24]});
+  }
+
+  /* ---------- one journey ---------- */
+  function journeySteps(r, parent, withMap){
+    var legs = r.g || [];
+    var pts = [];
+    if (has(r.s)) pts.push({a:r.s.a, o:r.s.o, start:true, label:"Start"});
+    legs.forEach(function(l, i){ if (typeof l.ta === "number") pts.push({a:l.ta, o:l.to, label:String(i + 1)}); });
+    if (withMap) addMap(parent, pts, true);
+    var prevA = has(r.s) ? r.s.a : null, prevO = has(r.s) ? r.s.o : null;
+    legs.forEach(function(l, i){
+      var row = el("div", "step");
+      row.appendChild(el("div", "num", String(i + 1)));
+      var g = el("div", "grow");
+      var what = (ICON[l.m] || "•") + " " + (l.m === "stay" ? "Stay at " + (l.tn || "") : (l.m === "task" ? (l.tn || "To do") :
+                 (l.ln ? l.ln : (NAME[l.m] || l.m || "")) + " → " + (l.tn || "?")));
+      g.appendChild(el("div", "t", what));
+      var meta = [];
+      if (l.dr) meta.push("towards " + l.dr);
+      if (l.st) meta.push(l.st + " stops");
+      if (l.dt) meta.push("departs " + clock(l.dt));
+      if (l.rm && !l.dt && l.m !== "stay") meta.push(l.rm + " min");
+      if (meta.length) g.appendChild(el("div", "small", meta.join(" · ")));
+      if (l.tp) g.appendChild(el("div", "tip", "“" + l.tp + "”"));
+      (l.lm || []).forEach(function(x){ if (x.n) g.appendChild(el("div", "tip", "👀 " + x.n)); });
+      var fa = typeof l.fa === "number" ? l.fa : prevA, fo = typeof l.fo === "number" ? l.fo : prevO;
+      if (typeof l.ta === "number" && l.m !== "stay" && l.m !== "task" && l.m !== "flight") g.appendChild(mapLinks(fa, fo, l.ta, l.to, l.m || "transit", l.tn));
+      row.appendChild(g);
+      parent.appendChild(row);
+      if (typeof l.ta === "number") { prevA = l.ta; prevO = l.to; }
+    });
+  }
+
+  function showJourney(r){
+    document.title = (r.n || "Journey") + " – JejakGo";
+    document.getElementById("title").textContent = r.n || "Shared journey";
+    if (r.a) app.insertBefore(el("div", "muted", "Journey from " + r.a), document.getElementById("title"));
+    var c = el("div", "card");
+    c.appendChild(el("div", "muted", (r.g || []).length + " steps" + (r.lt ? " · leave " + new Date(r.lt).toLocaleString("en-GB", {weekday:"short", day:"numeric", month:"short", hour:"2-digit", minute:"2-digit"}) : "")));
+    journeySteps(r, c, true);
+    app.appendChild(c);
+    if (r.lt && r.lt > Date.now()) app.appendChild(calButton([{title:"Leave: " + (r.n || "journey"), start:new Date(r.lt), rm:10}], r.n));
+    if (r.p) {
+      var ph = String(r.p).replace(/[^0-9+]/g, "");
+      var wa = el("a", "btn ghost", "WhatsApp " + (r.a || "")); wa.href = "https://wa.me/" + ph.replace("+", ""); app.appendChild(wa);
+    }
+    appButtons("intent://route?d=" + hash);
+  }
+
+  /* ---------- a whole itinerary ---------- */
+  function showTrip(t){
+    var key = "jg_ticks_" + t.id;
+    var ticks = store(key) || {};
+    function save(){ store(key, ticks); }
+    document.title = (t.n || "Itinerary") + " – JejakGo";
+    document.getElementById("title").textContent = t.n || "Itinerary";
+    var n = (t.days || []).length;
+    app.appendChild(el("div", "muted", dayLabel(dayDate(t, 0)) + " – " + dayLabel(dayDate(t, n - 1)) + " · " + n + " days"));
+    var js = {}; (t.js || []).forEach(function(r){ js[r.id] = r; });
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+
+    if ((t.pre || []).length) {
+      var pc = el("div", "card"); pc.appendChild(el("h2", null, "Before you go"));
+      t.pre.forEach(function(p, i){ pc.appendChild(checkRow("p" + i, "", p.x, null)); });
+      app.appendChild(pc);
+    }
+    var cal = [];
+    (t.days || []).forEach(function(day, d){
+      var date = dayDate(t, d);
+      var isToday = date.getTime() === today.getTime();
+      var c = el("div", "card" + (isToday ? " today" : ""));
+      var h = el("div", "dayh");
+      h.appendChild(el("h2", null, "Day " + (d + 1) + " · " + dayLabel(date) + (day.t ? " · " + day.t : "")));
+      if (isToday) h.appendChild(el("span", "tag", "TODAY"));
+      c.appendChild(h);
+      var body = el("div"); c.appendChild(body);
+      var open = isToday || date < today ? isToday : true;
+      if (date < today && !isToday) open = false;
+      body.style.display = open ? "" : "none";
+      h.onclick = function(){ body.style.display = body.style.display === "none" ? "" : "none"; if (body.style.display === "" && !body._map) { body._map = 1; drawDayMap(); } };
+      var pts = [];
+      (day.it || []).forEach(function(it){ if (has(it)) pts.push({a:it.a, o:it.o, label:it.x}); });
+      function drawDayMap(){ if (pts.length) { var holder = el("div"); body.insertBefore(holder, body.firstChild); addMap(holder, pts, false); } }
+      if (open) { body._map = 1; setTimeout(drawDayMap, 0); }
+      if (!(day.it || []).length) body.appendChild(el("div", "small", "Nothing planned"));
+      (day.it || []).forEach(function(it, k){
+        var extra = el("div");
+        if (has(it)) extra.appendChild(mapLinks(null, null, it.a, it.o, null, it.x));
+        if (it.k === "journey" && js[it.jid]) {
+          var sub = el("div", "sub"); sub.style.display = "none";
+          var more = el("div", "links"); var a = el("a", null, "Show steps ▾"); a.href = "javascript:void 0";
+          a.onclick = function(){ var hid = sub.style.display === "none"; sub.style.display = hid ? "" : "none"; a.textContent = hid ? "Hide steps ▴" : "Show steps ▾"; if (hid && !sub._b) { sub._b = 1; journeySteps(js[it.jid], sub, true); } };
+          more.appendChild(a); extra.appendChild(more); extra.appendChild(sub);
+        }
+        var time = hm(it.tm) + (it.te >= 0 ? "–" + hm(it.te) : "");
+        if (it.dt) extra.insertBefore(el("div", "small", it.dt), extra.firstChild);
+        body.appendChild(checkRow(d + "_" + k, time, (it.k === "ride" ? (RICON[it.mo] || "🎫") : (TICON[it.k] || "•")) + " " + (it.x || ""), extra));
+        if (it.tm >= 0) {
+          var s = new Date(date); s.setHours(Math.floor(it.tm / 60), it.tm % 60);
+          var e = null; if (it.te >= 0) { e = new Date(date); e.setHours(Math.floor(it.te / 60), it.te % 60); }
+          cal.push({title:(it.x || "Item") + " · " + t.n, start:s, end:e, rm:it.rm, lat:it.a, lon:it.o});
+        }
+      });
+      app.appendChild(c);
+    });
+
+    function checkRow(id, time, label, extra){
+      var r = el("div", "item" + (ticks[id] ? " done" : ""));
+      var b = el("div", "box", ticks[id] ? "☑" : "☐");
+      b.onclick = function(){ ticks[id] = !ticks[id]; save(); b.textContent = ticks[id] ? "☑" : "☐"; r.className = "item" + (ticks[id] ? " done" : ""); };
+      r.appendChild(b);
+      var g = el("div", "grow");
+      g.appendChild(el("div", "t", (time ? time + "  ·  " : "") + label));
+      if (extra) g.appendChild(extra);
+      r.appendChild(g);
+      return r;
+    }
+    if (cal.length) app.appendChild(calButton(cal, t.n));
+    app.appendChild(el("div", "small", "Ticks are saved in this browser only."));
+    appButtons(null);
+  }
+
+  /* ---------- calendar file (.ics): reminders on iPhone and Google Calendar ---------- */
+  function calButton(events, name){
+    var b = el("button", "btn ghost", "📅  Add to calendar (" + events.length + ")");
+    b.onclick = function(){
+      function f(d){ return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "T" + pad(d.getHours()) + pad(d.getMinutes()) + "00"; }
+      function esc(s){ return String(s).replace(/[\\,;]/g, function(c){ return "\\" + c; }).replace(/\n/g, "\\n"); }
+      var stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+      var out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//JejakGo//EN", "CALSCALE:GREGORIAN"];
+      events.forEach(function(e, i){
+        var end = e.end && e.end > e.start ? e.end : new Date(e.start.getTime() + 30 * 60e3);
+        out.push("BEGIN:VEVENT", "UID:jejakgo-" + i + "-" + e.start.getTime() + "@jejakgo.github.io", "DTSTAMP:" + stamp,
+                 "DTSTART:" + f(e.start), "DTEND:" + f(end), "SUMMARY:" + esc(e.title));
+        if (typeof e.lat === "number") out.push("LOCATION:" + e.lat + "\\, " + e.lon, "GEO:" + e.lat + ";" + e.lon);
+        if (e.rm != null && e.rm >= 0) out.push("BEGIN:VALARM", "ACTION:DISPLAY", "DESCRIPTION:" + esc(e.title), "TRIGGER:-PT" + e.rm + "M", "END:VALARM");
+        out.push("END:VEVENT");
+      });
+      out.push("END:VCALENDAR");
+      var blob = new Blob([out.join("\r\n")], {type:"text/calendar"});
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (name || "jejakgo").replace(/[^A-Za-z0-9 _-]/g, "").trim().replace(/ /g, "_") + ".ics";
+      document.body.appendChild(a); a.click(); a.remove();
+    };
+    return b;
+  }
+
+  function appButtons(intentPath){
+    if (isAndroid) {
+      var o = el("a", "btn primary", "Open in JejakGo");
+      var fb = encodeURIComponent(PLAY);
+      o.href = (intentPath || ("intent://trip?t=" + hash.slice(2))) + "#Intent;scheme=jejakgo;package=app.jejakgo;S.browser_fallback_url=" + fb + ";end";
+      app.appendChild(o);
+      var i = el("a", "btn ghost", "Get JejakGo for Android"); i.href = PLAY; app.appendChild(i);
+    } else {
+      app.appendChild(el("div", "small", "On Android, the JejakGo app also wakes you before your stop."));
+    }
+  }
+
+  function fail(msg){ document.getElementById("title").textContent = "Couldn't open this plan"; app.appendChild(el("div", "muted err", msg)); appButtons("intent://route"); }
+
+  if (!hash) { fail("This link is empty. Ask for the link again."); return; }
+  if (hash.indexOf("t.") === 0) {
+    if (typeof DecompressionStream === "undefined") { fail("Your browser is too old for this link. Please update it, or open the link on another phone."); return; }
+    try {
+      var ds = new Blob([b64bytes(hash.slice(2))]).stream().pipeThrough(new DecompressionStream("deflate"));
+      new Response(ds).text().then(function(s){ showTrip(JSON.parse(s)); }).catch(function(){ fail("The link looks broken. Ask for it again."); });
+    } catch (e) { fail("The link looks broken. Ask for it again."); }
+  } else {
+    try { showJourney(JSON.parse(new TextDecoder().decode(b64bytes(hash)))); }
+    catch (e) { fail("The link looks broken. Ask for it again."); }
+  }
+})();
+</script>
+</body>
+</html>
